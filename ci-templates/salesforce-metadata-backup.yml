@@ -1,0 +1,63 @@
+name: Salesforce Production Metadata Backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 18 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: salesforce-production-metadata-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    environment: production-backup
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Authenticate to Salesforce production
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.SF_PROD_AUTH_URL }}' > sf-auth-url.txt
+          sf org login sfdx-url \
+            --sfdx-url-file sf-auth-url.txt \
+            --alias production-backup
+          rm -f sf-auth-url.txt
+
+      - name: Ensure force-app directory exists
+        run: mkdir -p force-app/main/default
+
+      - name: Retrieve metadata
+        run: |
+          sf project retrieve start \
+            --manifest manifest/package.xml \
+            --target-org production-backup \
+            --wait 120
+
+      - name: Commit metadata changes
+        shell: bash
+        run: |
+          git config user.name "salesforce-production-backup-bot"
+          git config user.email "salesforce-production-backup-bot@users.noreply.github.com"
+          git add force-app manifest/package.xml sfdx-project.json
+
+          if git diff --cached --quiet; then
+            echo "No metadata changes detected."
+            exit 0
+          fi
+
+          git commit -m "backup: Salesforce production metadata $(date -u +'%Y-%m-%d')"
+          git pull --rebase origin main
+          git push origin HEAD:main
+

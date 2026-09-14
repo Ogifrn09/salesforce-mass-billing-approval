@@ -1,0 +1,109 @@
+name: Salesforce Production Data Backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 19 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: salesforce-production-data-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    environment: production-backup
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Authenticate to Salesforce production
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.SF_PROD_AUTH_URL }}' > sf-auth-url.txt
+          sf org login sfdx-url \
+            --sfdx-url-file sf-auth-url.txt \
+            --alias production-data-backup
+          rm -f sf-auth-url.txt
+
+      - name: Export approved objects
+        shell: bash
+        run: |
+          backup_date="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          backup_dir="backups/data/${backup_date}"
+          mkdir -p "${backup_dir}"
+          printf 'Object,Rows,SHA256,File\n' > "${backup_dir}/backup-summary.csv"
+
+          failures=0
+          while IFS='|' read -r file_name soql; do
+            if [ -z "${file_name}" ] || [[ "${file_name}" == \#* ]]; then
+              continue
+            fi
+
+            if printf '%s' "${soql}" | grep -Eiq '(^|[[:space:]])LIMIT[[:space:]]+[0-9]+'; then
+              echo "Backup query for ${file_name} contains LIMIT and is not allowed."
+              failures=$((failures + 1))
+              printf 'Object,Status\n"%s","FAILED: QUERY CONTAINS LIMIT"\n' "${file_name}" \
+                > "${backup_dir}/${file_name}.error.csv"
+              continue
+            fi
+
+            echo "Backing up ${file_name}"
+            if sf data export bulk \
+              --target-org production-data-backup \
+              --query "${soql}" \
+              --output-file "${backup_dir}/${file_name}.csv" \
+              --result-format csv \
+              --all-rows \
+              --wait 120; then
+              row_count="$(node -e "
+                const fs = require('fs');
+                const text = fs.readFileSync(process.argv[1], 'utf8');
+                let rows = 0;
+                let quoted = false;
+                for (let i = 0; i < text.length; i += 1) {
+                  if (text[i] === '\"') {
+                    if (quoted && text[i + 1] === '\"') i += 1;
+                    else quoted = !quoted;
+                  } else if (text[i] === '\n' && !quoted) {
+                    rows += 1;
+                  }
+                }
+                if (text.length && !text.endsWith('\n')) rows += 1;
+                console.log(Math.max(rows - 1, 0));
+              " "${backup_dir}/${file_name}.csv")"
+              checksum="$(sha256sum "${backup_dir}/${file_name}.csv" | awk '{print $1}')"
+              printf '"%s","%s","%s","%s.csv"\n' \
+                "${file_name}" "${row_count}" "${checksum}" "${file_name}" \
+                >> "${backup_dir}/backup-summary.csv"
+              echo "Backup completed for ${file_name}: ${row_count} row(s)"
+            else
+              failures=$((failures + 1))
+              printf 'Object,Status\n"%s","FAILED"\n' "${file_name}" \
+                > "${backup_dir}/${file_name}.error.csv"
+            fi
+          done < config/data-backup-queries.txt
+
+          echo "BACKUP_DIR=${backup_dir}" >> "${GITHUB_ENV}"
+          echo "FAILED_OBJECTS=${failures}" >> "${GITHUB_ENV}"
+
+      - name: Upload private GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: salesforce-production-data-${{ github.run_id }}
+          path: ${{ env.BACKUP_DIR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail when one or more objects were not backed up
+        if: ${{ env.FAILED_OBJECTS != '0' }}
+        run: |
+          echo "${FAILED_OBJECTS} object backup(s) failed. Download the artifact for error markers."
+          exit 1

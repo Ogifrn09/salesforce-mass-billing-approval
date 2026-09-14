@@ -1,0 +1,104 @@
+name: Go Live Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Type "DEPLOY" to execute live deployment to Salesforce Production (leave as "DRY-RUN" to test)'
+        required: true
+        default: 'DRY-RUN'
+        type: string
+      source_dir:
+        description: 'Target component path or manifest (e.g. force-app/main/default/lwc/cnopLineInformation or manifest/package.xml)'
+        required: false
+        default: 'force-app/main/default/lwc/cnopLineInformation'
+        type: string
+      test_level:
+        description: 'Apex Test Level'
+        required: true
+        default: 'RunSpecifiedTests'
+        type: choice
+        options:
+          - RunSpecifiedTests
+          - RunLocalTests
+          - NoTestRun
+          - RunAllTestsInOrg
+      specified_tests:
+        description: 'Specified Tests (comma-separated class names, only if test_level is RunSpecifiedTests)'
+        required: false
+        type: string
+        default: 'TMS_ContractAmendmentServiceTest'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Salesforce Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify Deployment Confirmation
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm_deploy }}" != "DEPLOY" ]; then
+            echo "::warning ::Dry-run mode selected. To deploy live to Production, enter 'DEPLOY'."
+          else
+            echo "Live deployment to Production confirmed."
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Authenticate to Salesforce
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.SF_PROD_AUTH_URL }}' > sf-auth-url.txt
+          sf org login sfdx-url --sfdx-url-file sf-auth-url.txt --alias prod-org
+          rm -f sf-auth-url.txt
+
+      - name: Execute Deployment
+        shell: bash
+        run: |
+          DEPLOY_CMD="sf project deploy start --target-org prod-org --wait 120"
+          
+          # Check Dry Run
+          if [ "${{ inputs.confirm_deploy }}" != "DEPLOY" ]; then
+            DEPLOY_CMD="$DEPLOY_CMD --dry-run"
+          fi
+          
+          # Check Source directory or manifest
+          SRC_INPUT="${{ inputs.source_dir }}"
+          if [ -n "$SRC_INPUT" ]; then
+            if [[ "$SRC_INPUT" == *.xml ]]; then
+              DEPLOY_CMD="$DEPLOY_CMD --manifest $SRC_INPUT"
+            else
+              DEPLOY_CMD="$DEPLOY_CMD --source-dir $SRC_INPUT"
+            fi
+          elif [ -f "manifest/package.xml" ]; then
+            DEPLOY_CMD="$DEPLOY_CMD --manifest manifest/package.xml"
+          else
+            DEPLOY_CMD="$DEPLOY_CMD --source-dir force-app/main/default/lwc/cnopLineInformation"
+          fi
+          
+          # Test Level Handling
+          TEST_LVL="${{ inputs.test_level }}"
+          SPECIFIED_TESTS="${{ inputs.specified_tests }}"
+
+          if [ "$TEST_LVL" = "RunSpecifiedTests" ] && [ -z "$SPECIFIED_TESTS" ]; then
+            SPECIFIED_TESTS="TMS_ContractAmendmentServiceTest"
+          fi
+
+          DEPLOY_CMD="$DEPLOY_CMD --test-level $TEST_LVL"
+          
+          if [ "$TEST_LVL" = "RunSpecifiedTests" ] && [ -n "$SPECIFIED_TESTS" ]; then
+            DEPLOY_CMD="$DEPLOY_CMD --tests $SPECIFIED_TESTS"
+          fi
+          
+          echo "Executing command: $DEPLOY_CMD"
+          eval $DEPLOY_CMD

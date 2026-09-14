@@ -1,0 +1,102 @@
+name: Validation Production
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      test_level:
+        description: "Apex Test Level"
+        required: true
+        default: "RunLocalTests"
+        type: choice
+        options:
+          - RunLocalTests
+          - RunSpecifiedTests
+          - NoTestRun
+          - RunAllTestsInOrg
+      specified_tests:
+        description: "Specified Tests (comma-separated class names, only if test_level is RunSpecifiedTests)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Deployment (Dry-Run)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Authenticate to Salesforce
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.SF_PROD_AUTH_URL }}' > sf-auth-url.txt
+          sf org login sfdx-url --sfdx-url-file sf-auth-url.txt --alias target-org
+          rm -f sf-auth-url.txt
+
+      - name: Validate Metadata (Dry-Run)
+        shell: bash
+        run: |
+          TEST_LEVEL="${{ inputs.test_level }}"
+          SPECIFIED_TESTS="${{ inputs.specified_tests }}"
+
+          # If triggered by pull_request or test_level is empty, auto-detect from git diff
+          if [ -z "$TEST_LEVEL" ]; then
+            APEX_CHANGED=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep -E "\.(cls|trigger)$" || true)
+            
+            if [ -z "$APEX_CHANGED" ]; then
+              echo "No Apex classes or triggers modified. Using RunSpecifiedTests with TMS_ContractAmendmentServiceTest."
+              TEST_LEVEL="RunSpecifiedTests"
+              SPECIFIED_TESTS="TMS_ContractAmendmentServiceTest"
+            else
+              DIFF_TESTS=$(echo "$APEX_CHANGED" | grep -i "test\.cls$" | sed -e 's/.*\///' -e 's/\.cls$//' | tr '\n' ',' | sed 's/,$//' || true)
+              if [ -n "$DIFF_TESTS" ]; then
+                TEST_LEVEL="RunSpecifiedTests"
+                SPECIFIED_TESTS="$DIFF_TESTS"
+              else
+                TEST_LEVEL="RunSpecifiedTests"
+                SPECIFIED_TESTS="TMS_ContractAmendmentServiceTest"
+              fi
+            fi
+          fi
+
+          echo "Running deployment validation with test level: $TEST_LEVEL (Tests: $SPECIFIED_TESTS)"
+          
+          CMD="sf project deploy start --dry-run --target-org target-org --wait 120"
+          
+          # Detect changed component directories under force-app
+          CHANGED_PATHS=$(git diff --name-only origin/main...HEAD 2>/dev/null | grep "^force-app/" | sed -E 's|^(force-app/[^/]+/[^/]+/[^/]+/[^/]+).*|\1|' | sort -u | tr '\n' ' ' || true)
+          
+          if [ -n "$CHANGED_PATHS" ]; then
+            echo "Deploying only changed components: $CHANGED_PATHS"
+            for p in $CHANGED_PATHS; do
+              if [ -e "$p" ]; then
+                CMD="$CMD --source-dir $p"
+              fi
+            done
+          elif [ -d "force-app" ] && [ "$(ls -A force-app 2>/dev/null)" ]; then
+            CMD="$CMD --source-dir force-app"
+          else
+            CMD="$CMD --manifest manifest/package.xml"
+          fi
+          
+          CMD="$CMD --test-level $TEST_LEVEL"
+          
+          if [ "$TEST_LEVEL" = "RunSpecifiedTests" ] && [ -n "$SPECIFIED_TESTS" ]; then
+            CMD="$CMD --tests $SPECIFIED_TESTS"
+          fi
+          
+          echo "Executing: $CMD"
+          eval $CMD

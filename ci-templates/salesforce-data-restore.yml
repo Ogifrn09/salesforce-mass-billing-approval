@@ -1,0 +1,174 @@
+name: Salesforce Production Data Restore
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_run_id:
+        description: "Run ID of a successful Production Data Backup"
+        required: true
+        type: string
+      mode:
+        description: "DRY_RUN validates; RESTORE updates production"
+        required: true
+        default: "DRY_RUN"
+        type: choice
+        options:
+          - DRY_RUN
+          - RESTORE
+      confirmation:
+        description: "For RESTORE, type RESTORE_PRODUCTION_DATA"
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: salesforce-production-data-restore
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate restore request
+        shell: bash
+        run: |
+          if [ "${{ inputs.mode }}" = "RESTORE" ] && \
+             [ "${{ inputs.confirmation }}" != "RESTORE_PRODUCTION_DATA" ]; then
+            echo "Restore confirmation is invalid."
+            exit 1
+          fi
+
+          if ! [[ "${{ inputs.backup_run_id }}" =~ ^[0-9]+$ ]]; then
+            echo "backup_run_id must contain only digits."
+            exit 1
+          fi
+
+      - name: Download backup artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.backup_run_id }}
+          pattern: salesforce-production-data-*
+          path: downloaded-backup
+          merge-multiple: true
+
+      - name: Prepare writable restore files
+        run: |
+          python3 scripts/prepare_restore.py \
+            --backup-dir downloaded-backup \
+            --output-dir prepared-restore \
+            --plan config/data-restore-plan.json
+
+      - name: Display restore summary
+        run: cat prepared-restore/restore-summary.json
+
+      - name: Upload prepared restore package
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepared-production-restore-${{ github.run_id }}
+          path: prepared-restore/
+          if-no-files-found: error
+          retention-days: 7
+
+  restore:
+    if: ${{ inputs.mode == 'RESTORE' }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: production-restore
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download prepared restore package
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-production-restore-${{ github.run_id }}
+          path: prepared-restore
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Authenticate to Salesforce production
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.SF_PROD_RESTORE_AUTH_URL }}' > sf-auth-url.txt
+          sf org login sfdx-url \
+            --sfdx-url-file sf-auth-url.txt \
+            --alias production-restore
+          rm -f sf-auth-url.txt
+
+      - name: Restore existing records in dependency order
+        shell: bash
+        run: |
+          mkdir -p restore-results
+          failures=0
+
+          while IFS= read -r object_name; do
+            restore_file="prepared-restore/${object_name}.csv"
+            row_count="$(python3 -c "import csv,sys; print(sum(1 for _ in csv.DictReader(open(sys.argv[1], encoding='utf-8'))))" "${restore_file}")"
+
+            if [ "${row_count}" = "0" ]; then
+              echo "Skipping ${object_name}: no rows."
+              continue
+            fi
+
+            echo "Restoring ${object_name}: ${row_count} row(s)"
+            if ! sf data update bulk \
+              --target-org production-restore \
+              --sobject "${object_name}" \
+              --file "${restore_file}" \
+              --wait 120 \
+              --json > "restore-results/${object_name}.json"; then
+              failures=$((failures + 1))
+              echo "Restore failed for ${object_name}; continuing."
+              continue
+            fi
+
+            if ! node -e "
+              const fs = require('fs');
+              const payload = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+              const result = payload.result || payload;
+              const expected = Number(process.argv[2]);
+              const processed = Number(result.processedRecords);
+              const successful = Number(result.successfulRecords);
+              const failed = Number(result.failedRecords);
+              if (processed !== expected || successful !== expected || failed !== 0) {
+                console.error(JSON.stringify({ expected, processed, successful, failed }));
+                process.exit(1);
+              }
+            " "restore-results/${object_name}.json" "${row_count}"; then
+              failures=$((failures + 1))
+              echo "Restore verification failed for ${object_name}."
+            fi
+          done < <(
+            node -e "
+              const plan = require('./config/data-restore-plan.json');
+              for (const item of plan.objects) console.log(item.name);
+            "
+          )
+
+          echo "RESTORE_FAILURES=${failures}" >> "${GITHUB_ENV}"
+
+      - name: Upload restore results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-restore-results-${{ github.run_id }}
+          path: restore-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when one or more object restores failed
+        if: ${{ env.RESTORE_FAILURES != '0' }}
+        run: |
+          echo "${RESTORE_FAILURES} object restore(s) failed."
+          exit 1
