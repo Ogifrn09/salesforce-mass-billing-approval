@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>MassBillingApprovalController</members>
+        <members>MassBillingApprovalService</members>
+        <members>MassBillingApprovalTest</members>
+        <name>ApexClass</name>
+    </types>
+    <types>
+        <members>Billing_Approval_Audit__c.Action_Date_Time__c</members>
+        <members>Billing_Approval_Audit__c.Action_Taken__c</members>
+        <members>Billing_Approval_Audit__c.Processed_By__c</members>
+        <members>Billing_Approval_Audit__c.Rejection_Reason__c</members>
+        <members>Billing_Approval_Audit__c.Sales_Order__c</members>
+        <members>Order.Approved_via_Button__c</members>
+        <name>CustomField</name>
+    </types>
+    <types>
+        <members>Billing_Approval_Audit__c</members>
+        <name>CustomObject</name>
+    </types>
+    <types>
+        <members>Mass_Billing_Approval</members>
+        <name>CustomTab</name>
+    </types>
+    <types>
+        <members>massBillingApproval</members>
+        <name>LightningComponentBundle</name>
+    </types>
+    <types>
+        <members>Billing_Approval_Audit__c-Billing Approval Audit Layout</members>
+        <name>Layout</name>
+    </types>
+    <types>
+        <members>MassBillingTemplate</members>
+        <name>StaticResource</name>
+    </types>
+    <version>60.0</version>
+</Package>

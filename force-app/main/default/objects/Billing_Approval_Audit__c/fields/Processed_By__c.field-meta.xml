@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Processed_By__c</fullName>
+    <deleteConstraint>SetNull</deleteConstraint>
+    <label>Processed By</label>
+    <referenceTo>User</referenceTo>
+    <relationshipName>Billing_Approval_Audits</relationshipName>
+    <required>false</required>
+    <trackHistory>false</trackHistory>
+    <trackTrending>false</trackTrending>
+    <type>Lookup</type>
+</CustomField>

@@ -1,0 +1,338 @@
+<template>
+    <lightning-card title="Mass Billing Approval Module" icon-name="standard:orders">
+        <!-- MODE SELECTOR TABS -->
+        <lightning-tabset active-tab-value={activeTab} variant="scoped">
+            
+            <!-- TAB 1: LIVE QUERY MODE -->
+            <lightning-tab label="🔍 List Order Billing Approval" value="liveQuery" onactive={handleLiveTabActive} icon-name="utility:database">
+                <div class="slds-p-around_medium slds-theme_default slds-border_bottom">
+                    <div class="slds-grid slds-gutters slds-wrap slds-grid_vertical-align-end">
+                        
+                        <!-- Multi-Customer Dropdown Picker -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_5-of-12">
+                            <lightning-combobox
+                                name="customerAccountPicker"
+                                label="Customer Accounts"
+                                value=""
+                                placeholder="Select Customer Account"
+                                options={availableAccountOptions}
+                                onchange={handleAddCustomerAccount}>
+                            </lightning-combobox>
+                        </div>
+
+                        <!-- Search Keyword Input -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12">
+                            <lightning-input
+                                type="search"
+                                label="Search Order / SID / Product / Customer"
+                                placeholder="Enter keyword..."
+                                value={searchKey}
+                                onchange={handleSearchChange}>
+                            </lightning-input>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_3-of-12 slds-text-align_right">
+                            <lightning-button
+                                variant="brand"
+                                label="Refresh Data"
+                                icon-name="utility:refresh"
+                                onclick={handleRefreshData}
+                                disabled={isLoading}
+                                class="slds-m-right_x-small">
+                            </lightning-button>
+
+                            <lightning-button
+                                variant="neutral"
+                                label="Export CSV"
+                                icon-name="utility:download"
+                                onclick={handleExportData}
+                                disabled={isTableEmpty}>
+                            </lightning-button>
+                        </div>
+                    </div>
+
+                    <!-- Selected Customers Pill Container -->
+                    <template if:true={hasSelectedCustomers}>
+                        <div class="slds-m-top_small slds-grid slds-grid_vertical-align-center slds-wrap">
+                            <span class="slds-text-title_bold slds-m-right_small">Selected Customers ({selectedCustomerCount}):</span>
+                            <template for:each={selectedCustomers} for:item="cust">
+                                <span key={cust.id} class="slds-pill slds-m-right_xx-small slds-m-bottom_xx-small">
+                                    <span class="slds-pill__label">{cust.name}</span>
+                                    <button class="slds-button slds-button_icon slds-pill__remove" title="Remove" data-id={cust.id} onclick={handleRemoveCustomer}>
+                                        <lightning-icon icon-name="utility:close" size="x-small" alternative-text="Remove"></lightning-icon>
+                                    </button>
+                                </span>
+                            </template>
+                            <lightning-button-icon
+                                icon-name="utility:delete"
+                                variant="bare"
+                                title="Clear All Customer Filters"
+                                onclick={handleClearAllCustomers}
+                                class="slds-m-left_x-small">
+                            </lightning-button-icon>
+                        </div>
+                    </template>
+                </div>
+            </lightning-tab>
+
+            <!-- TAB 2: UPLOAD FILE MODE -->
+            <lightning-tab label="📤 Upload File (Excel / CSV)" value="uploadFile" onactive={handleUploadTabActive} icon-name="utility:upload">
+                <div class="slds-p-around_medium slds-theme_default slds-border_bottom">
+                    <div class="slds-grid slds-gutters slds-wrap slds-grid_vertical-align-center">
+                        
+                        <!-- File Upload Input -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12">
+                            <lightning-input
+                                type="file"
+                                label="Select CSV / Excel File (Column: Order Number)"
+                                accept=".csv, .txt"
+                                onchange={handleFileUpload}
+                                disabled={isLoading}>
+                            </lightning-input>
+                        </div>
+
+                        <!-- Action & Template Buttons -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-text-align_right">
+                            <a
+                                class="slds-button slds-button_neutral slds-m-right_x-small"
+                                href={templateUrl}
+                                download="Template_Upload_Mass_Billing.csv"
+                                target="_blank">
+                                <lightning-icon icon-name="utility:page" size="x-small" class="slds-m-right_xx-small"></lightning-icon>
+                                Download CSV Template
+                            </a>
+
+                            <lightning-button
+                                variant="neutral"
+                                label="Export Result CSV"
+                                icon-name="utility:download"
+                                onclick={handleExportData}
+                                disabled={isTableEmpty}>
+                            </lightning-button>
+                        </div>
+                    </div>
+
+                    <!-- Upload Process Status Alert -->
+                    <template if:true={uploadResultSummary}>
+                        <div class="slds-m-top_small slds-notify slds-notify_alert slds-alert_info slds-theme_shade" role="alert">
+                            <lightning-icon icon-name="utility:info" size="x-small" class="slds-m-right_x-small"></lightning-icon>
+                            <h2>{uploadResultSummary}</h2>
+                        </div>
+                    </template>
+                </div>
+            </lightning-tab>
+        </lightning-tabset>
+
+        <!-- SUMMARY & MASS ACTION BAR -->
+        <div class="slds-p-horizontal_medium slds-p-vertical_small slds-theme_shade slds-grid slds-wrap slds-grid_align-spread slds-grid_vertical-align-center">
+            <div class="slds-grid slds-grid_vertical-align-center slds-wrap slds-m-bottom_xx-small">
+                <span class="slds-text-title_bold slds-m-right_small">Review Summary:</span>
+                <lightning-badge label={totalRecordsBadge} class="slds-badge_inverse slds-m-right_small"></lightning-badge>
+                <lightning-badge label={grandTotalBadge} class="slds-theme_success slds-m-right_medium"></lightning-badge>
+                <template if:true={hasSelectedRows}>
+                    <lightning-badge label={selectedCountBadge} class="slds-theme_alt-inverse slds-m-right_small"></lightning-badge>
+                </template>
+
+                <!-- Quick Selection Action Buttons -->
+                <lightning-button
+                    variant="neutral"
+                    label="Select All"
+                    icon-name="utility:multi_select_checkbox"
+                    onclick={handleSelectAllValid}
+                    disabled={isSelectAllDisabled}
+                    class="slds-m-right_x-small">
+                </lightning-button>
+                <template if:true={hasSelectedRows}>
+                    <lightning-button
+                        variant="base"
+                        label="Deselect All"
+                        onclick={handleDeselectAll}
+                        class="slds-m-right_small">
+                    </lightning-button>
+                </template>
+            </div>
+            <div class="slds-grid slds-grid_vertical-align-center">
+                <!-- MASS ACTION BUTTONS -->
+                <lightning-button
+                    variant="success"
+                    label={approveButtonLabel}
+                    icon-name="utility:check"
+                    onclick={handleOpenApproveModal}
+                    disabled={isActionDisabled}
+                    class="slds-m-right_x-small">
+                </lightning-button>
+                <lightning-button
+                    variant="destructive"
+                    label={rejectButtonLabel}
+                    icon-name="utility:close"
+                    onclick={handleOpenRejectModal}
+                    disabled={isActionDisabled}
+                    class="slds-m-right_small">
+                </lightning-button>
+            </div>
+        </div>
+
+        <!-- SPINNER -->
+        <template if:true={isLoading}>
+            <div class="slds-is-relative slds-p-around_large">
+                <lightning-spinner alternative-text="Processing order data..." size="medium"></lightning-spinner>
+            </div>
+        </template>
+
+        <!-- DATA TABLE -->
+        <div class="slds-p-around_medium table-container">
+            <template if:true={hasData}>
+                <lightning-datatable
+                    key-field="id"
+                    data={filteredRecords}
+                    columns={columns}
+                    selected-rows={selectedRowKeys}
+                    onrowselection={handleRowSelection}>
+                </lightning-datatable>
+            </template>
+
+            <template if:true={isTableEmpty}>
+                <div class="slds-text-align_center slds-p-around_xx-large slds-theme_default slds-border_around">
+                    <lightning-icon icon-name="utility:inbox" size="large" class="slds-m-bottom_small"></lightning-icon>
+                    <h3 class="slds-text-heading_medium">{emptyTableTitle}</h3>
+                    <p class="slds-text-color_weak slds-m-top_x-small">
+                        {emptyTableSubtitle}
+                    </p>
+                </div>
+            </template>
+        </div>
+
+        <!-- MODAL MASS APPROVE CONFIRMATION -->
+        <template if:true={isApproveModalOpen}>
+            <section role="dialog" tabindex="-1" class="slds-modal slds-fade-in-open slds-modal_small" aria-labelledby="modal-heading-01" aria-modal="true">
+                <div class="slds-modal__container">
+                    <header class="slds-modal__header slds-theme_success slds-theme_alert-texture">
+                        <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close" onclick={handleCloseApproveModal}>
+                            <lightning-icon icon-name="utility:close" alternative-text="Close" variant="inverse" size="small"></lightning-icon>
+                            <span class="slds-assistive-text">Close</span>
+                        </button>
+                        <h2 id="modal-heading-01" class="slds-modal__title slds-hyphenate slds-text-color_inverse">
+                            Confirm Mass Billing Approval
+                        </h2>
+                    </header>
+                    <div class="slds-modal__content slds-p-around_medium">
+                        <p class="slds-text-heading_small slds-m-bottom_medium">
+                            You are about to approve <strong>{selectedRowCount} selected Order(s)</strong>.
+                        </p>
+                        <div class="slds-box slds-theme_shade slds-m-bottom_small">
+                            <ul class="slds-list_dotted">
+                                <li>Order Status will be updated to <strong>Completed</strong>.</li>
+                                <li>Field <code>Approved_via_Button__c</code> will be set to <strong>true</strong>.</li>
+                                <li>Approval history will be automatically recorded in <strong>Billing Approval History</strong> under your user account.</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <footer class="slds-modal__footer">
+                        <lightning-button label="Cancel" variant="neutral" onclick={handleCloseApproveModal} class="slds-m-right_x-small" disabled={isLoading}></lightning-button>
+                        <lightning-button label="Confirm Approve" variant="success" icon-name="utility:check" onclick={handleConfirmApprove} disabled={isLoading}></lightning-button>
+                    </footer>
+                </div>
+            </section>
+            <div class="slds-backdrop slds-backdrop_open" role="presentation"></div>
+        </template>
+
+        <!-- MODAL MASS REJECT WITH REASON -->
+        <template if:true={isRejectModalOpen}>
+            <section role="dialog" tabindex="-1" class="slds-modal slds-fade-in-open slds-modal_small" aria-labelledby="modal-heading-02" aria-modal="true">
+                <div class="slds-modal__container">
+                    <header class="slds-modal__header slds-theme_error slds-theme_alert-texture">
+                        <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close" onclick={handleCloseRejectModal}>
+                            <lightning-icon icon-name="utility:close" alternative-text="Close" variant="inverse" size="small"></lightning-icon>
+                            <span class="slds-assistive-text">Close</span>
+                        </button>
+                        <h2 id="modal-heading-02" class="slds-modal__title slds-hyphenate slds-text-color_inverse">
+                            Confirm Mass Billing Rejection
+                        </h2>
+                    </header>
+                    <div class="slds-modal__content slds-p-around_medium">
+                        <p class="slds-text-heading_small slds-m-bottom_medium">
+                            You are about to reject <strong>{selectedRowCount} selected Order(s)</strong> back to <strong>BASO In Progress</strong> status.
+                        </p>
+                        <div class="slds-m-bottom_medium">
+                            <lightning-textarea
+                                name="rejectionReasonInput"
+                                label="Rejection Reason"
+                                value={rejectionReason}
+                                onchange={handleRejectionReasonChange}
+                                required
+                                placeholder="Enter detailed rejection notes / reason..."
+                                rows="3">
+                            </lightning-textarea>
+                            <span class="slds-text-color_weak slds-text-body_small">
+                                * This reason is mandatory and will be permanently recorded in <strong>Billing Approval History</strong>.
+                            </span>
+                        </div>
+                    </div>
+                    <footer class="slds-modal__footer">
+                        <lightning-button label="Cancel" variant="neutral" onclick={handleCloseRejectModal} class="slds-m-right_x-small" disabled={isLoading}></lightning-button>
+                        <lightning-button label="Confirm Reject" variant="destructive" icon-name="utility:close" onclick={handleConfirmReject} disabled={isRejectBtnDisabled}></lightning-button>
+                    </footer>
+                </div>
+            </section>
+            <div class="slds-backdrop slds-backdrop_open" role="presentation"></div>
+        </template>
+
+        <!-- MODAL EXECUTION ERROR / SUMMARY -->
+        <template if:true={isErrorModalOpen}>
+            <section role="dialog" tabindex="-1" class="slds-modal slds-fade-in-open slds-modal_medium" aria-labelledby="modal-heading-03" aria-modal="true">
+                <div class="slds-modal__container">
+                    <header class="slds-modal__header slds-theme_warning slds-theme_alert-texture">
+                        <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close" onclick={handleCloseErrorModal}>
+                            <lightning-icon icon-name="utility:close" alternative-text="Close" variant="inverse" size="small"></lightning-icon>
+                            <span class="slds-assistive-text">Close</span>
+                        </button>
+                        <h2 id="modal-heading-03" class="slds-modal__title slds-hyphenate slds-text-color_inverse">
+                            ⚠️ Execution Result: Validation Errors Detected
+                        </h2>
+                    </header>
+                    <div class="slds-modal__content slds-p-around_medium">
+                        <!-- Summary Stats Alert -->
+                        <div class="slds-notify slds-notify_alert slds-alert_warning slds-m-bottom_medium" role="alert">
+                            <lightning-icon icon-name="utility:warning" size="x-small" class="slds-m-right_x-small"></lightning-icon>
+                            <h2>
+                                <strong>{executionSummaryMessage}</strong>
+                            </h2>
+                        </div>
+
+                        <p class="slds-text-body_regular slds-m-bottom_small">
+                            The following <strong>{failedOrdersCount} order(s)</strong> could not be updated due to validation errors in Salesforce. You can review each error reason below or export them directly to CSV:
+                        </p>
+
+                        <!-- Failed Orders Datatable -->
+                        <div class="table-container slds-border_around" style="max-height: 320px; overflow-y: auto;">
+                            <lightning-datatable
+                                key-field="orderId"
+                                data={failedOrdersData}
+                                columns={failedColumns}
+                                hide-checkbox-column>
+                            </lightning-datatable>
+                        </div>
+                    </div>
+                    <footer class="slds-modal__footer slds-grid slds-grid_align-spread">
+                        <lightning-button
+                            label="Export Failed Orders (CSV)"
+                            variant="brand"
+                            icon-name="utility:download"
+                            onclick={handleDownloadFailedCsv}>
+                        </lightning-button>
+                        <lightning-button
+                            label="Close"
+                            variant="neutral"
+                            onclick={handleCloseErrorModal}>
+                        </lightning-button>
+                    </footer>
+                </div>
+            </section>
+            <div class="slds-backdrop slds-backdrop_open" role="presentation"></div>
+        </template>
+
+        <!-- HIDDEN ANCHOR FOR EXPORT DOWNLOAD -->
+        <a class="hidden-csv-download slds-hide" aria-hidden="true" target="_self"></a>
+    </lightning-card>
+</template>

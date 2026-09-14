@@ -1,0 +1,12 @@
+# Salesforce DX
+.sfdx/
+.sf/
+.localdevserver/
+.scannerwork/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
